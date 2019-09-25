@@ -29,7 +29,8 @@
 
 #define EXTIP_BASE_PATH "/etc/filehosts/"
 #define EXTIP_BASE_PATH_LEN 18
-#define EXTIP_HOSTNAME_MAXLEN 64
+#define EXTIP_HOSTNAME_MAXLEN 255
+#define SUCCESS 1
 
 struct ipaddr {
 	int af;
@@ -69,7 +70,7 @@ void* ipaddr_get_binary_addr(struct ipaddr *addr)
 }
 
 enum nss_status extip_gethostbyname_r(
-	const char *name,
+	const char *hostname,
 	struct hostent *result,
 	char *buffer,
 	size_t buflen,
@@ -81,106 +82,111 @@ enum nss_status extip_gethostbyname_r(
 	struct ipaddr extip;
 	FILE *fh;
 	char extip_file[EXTIP_BASE_PATH_LEN+EXTIP_HOSTNAME_MAXLEN+1];
-	char extip_hostname[EXTIP_HOSTNAME_MAXLEN+1];
 	char ipbuf[INET6_ADDRSTRLEN];
-	int af = 0;
 	int cnt = 0;
 	
 	
-	// TODO: check TLD ".localhost"
-	if(strcmp(name, "extip.localhost")==0 || strcmp(name, "extipv4.localhost")==0) af = AF_INET;
-	else if(strcmp(name, "extipv6.localhost")==0) af = AF_INET6;
-	// TODO: extract extip_hostname
-	// TODO: guess address family
-	
-	if(af != 0 && (req_af == af || req_af == 0))
+	/* Check buffer size */
+	if(sizeof(char*) /* NULL pointer for aliases */ + strlen(hostname)+1 /* official name string */ + 8 /* possible alignment */ > buflen)
 	{
-		/* Check buffer size */
-		if(sizeof(char*) /* NULL pointer for aliases */ + strlen(name)+1 /* official name string */ + 8 /* possible alignment */ > buflen)
+		goto buffer_error;
+	}
+	
+	/* We don't know the address family yet */
+	result->h_addrtype = 0;
+	
+	/* Alias names := none */
+	*((char**) buffer) = NULL;
+	result->h_aliases = (char**) buffer;
+	idx = sizeof(char*);
+	
+	/* Canonical name -> copy requested hostname */
+	strcpy(buffer+idx, hostname);
+	result->h_name = buffer+idx;
+	idx += strlen(hostname)+1;
+	ALIGN(idx);
+	astart = idx;
+	
+	/* Construct file name */
+	if(strlen(hostname) > EXTIP_HOSTNAME_MAXLEN)
+	{
+		/* hostname is too long */
+		goto host_not_found;
+	}
+	if(snprintf(extip_file, EXTIP_BASE_PATH_LEN + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, hostname) != EXTIP_BASE_PATH_LEN + strlen(hostname))
+	{
+		abort();
+	}
+	
+	/* Read IP addresses from file */
+	fh = fopen(extip_file, "r");
+	if(fh == NULL)
+	{
+		if(errno == ENOENT) goto host_not_found;
+		
+		warn("%s", extip_file);
+		*errnop = EAGAIN;
+		*h_errnop = NO_RECOVERY;
+		return NSS_STATUS_TRYAGAIN;
+	}
+	
+	while(!feof(fh))
+	{
+		if(fscanf(fh, "%s", &ipbuf) == 1)
 		{
-			goto buffer_error;
-		}
-		
-		/* Alias names := none */
-		*((char**) buffer) = NULL;
-		result->h_aliases = (char**) buffer;
-		idx = sizeof(char*);
-		
-		/* Canonical name -> copy requested hostname */
-		strcpy(buffer+idx, name);
-		result->h_name = buffer+idx;
-		idx += strlen(name)+1;
-		ALIGN(idx);
-		astart = idx;
-		
-		result->h_addrtype = af;
-		result->h_length = (af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
-		
-		/* Construct file name */
-		if(snprintf(extip_file, EXTIP_BASE_PATH_LEN + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, extip_hostname) <= 0)
-		{
-			abort();
-		}
-		
-		/* Read file containing external IPs */
-		fh = fopen(extip_file, "r");
-		if(fh == NULL)
-		{
-			if(errno == ENOENT) goto host_not_found;
-			
-			warn("%s", extip_file);
-			*errnop = EAGAIN;
-			*h_errnop = NO_RECOVERY;
-			return NSS_STATUS_TRYAGAIN;
-		}
-		
-		while(!feof(fh))
-		{
-			if(fscanf(fh, "%s", &ipbuf) == 1)
+			if(parseIpStr(ipbuf, &extip) == SUCCESS)
 			{
-				if(parseIpStr(ipbuf, &extip) == 1)
+				if(req_af == 0)
 				{
-					if(extip.af == af)
+					/* Let's take the first found IP's AF if there was no preferred AF in the request */
+					req_af = extip.af;
+				}
+				if(extip.af == req_af)
+				{
+					if(result->h_addrtype == 0)
 					{
-						if(idx + result->h_length + (cnt+1) * sizeof(char*) > buflen)
-						{
-							fclose(fh);
-							goto buffer_error;
-						}
-						
-						memcpy(buffer+idx, ipaddr_get_binary_addr(&extip), result->h_length);
-						idx += result->h_length;
-						cnt++;
+						/* Fill the AF fields if they have not yet */
+						result->h_addrtype = extip.af;
+						result->h_length = (extip.af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
 					}
+					
+					if(idx + result->h_length + (cnt+1) * sizeof(char*) > buflen)
+					{
+						fclose(fh);
+						goto buffer_error;
+					}
+					
+					memcpy(buffer+idx, ipaddr_get_binary_addr(&extip), result->h_length);
+					idx += result->h_length;
+					cnt++;
 				}
 			}
 		}
-		fclose(fh);
-		
-		if(cnt == 0)
-		{
-			host_not_found:
-			*errnop = EINVAL;
-			*h_errnop = NO_ADDRESS;
-			return NSS_STATUS_NOTFOUND;
-		}
-		
-		result->h_addr_list = (char**)(buffer + idx);
-		int n = 0;
-		for(; n < cnt; n++)
-		{
-			result->h_addr_list[n] = (char*)(buffer + astart + n*result->h_length);
-		}
-		result->h_addr_list[n] = NULL;
-		
-		return NSS_STATUS_SUCCESS;
 	}
-	else
+	fclose(fh);
+	
+	if(cnt == 0)
 	{
+		host_not_found:
 		*errnop = EINVAL;
-		*h_errnop = HOST_NOT_FOUND;
+		*h_errnop = NO_ADDRESS;
 		return NSS_STATUS_NOTFOUND;
 	}
+	
+	result->h_addr_list = (char**)(buffer + idx);
+	int n = 0;
+	for(; n < cnt; n++)
+	{
+		result->h_addr_list[n] = (char*)(buffer + astart + n*result->h_length);
+	}
+	result->h_addr_list[n] = NULL;
+	
+	return NSS_STATUS_SUCCESS;
+	
+	wrong_address_family:
+	*errnop = EINVAL;
+	*h_errnop = HOST_NOT_FOUND;
+	return NSS_STATUS_NOTFOUND;
 	
 	buffer_error:
 	warnx("Not enough buffer space at %s().", __func__);
@@ -190,18 +196,18 @@ enum nss_status extip_gethostbyname_r(
 }
 
 enum nss_status _nss_extip_gethostbyname_r(
-	const char *name,
+	const char *hostname,
 	struct hostent *result,
 	char *buffer,
 	size_t buflen,
 	int *errnop,
 	int *h_errnop)
 {
-	return extip_gethostbyname_r(name, result, buffer, buflen, errnop, h_errnop, 0);
+	return extip_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, 0);
 }
 
 enum nss_status _nss_extip_gethostbyname2_r(
-	const char *name,
+	const char *hostname,
 	int af,
 	struct hostent * result,
 	char *buffer,
@@ -217,7 +223,7 @@ enum nss_status _nss_extip_gethostbyname2_r(
 	}
 	else
 	{
-		return extip_gethostbyname_r(name, result, buffer, buflen, errnop, h_errnop, af);
+		return extip_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, af);
 	}
 }
 
