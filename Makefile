@@ -7,9 +7,9 @@ BITSOFS=
 libprefix = ${exec_prefix}/lib$(BITSOFS)
 DESTDIR=
 OBJSUFFIX=$(BITSOFS).o
-OBJECTS=libnss_extip$(OBJSUFFIX) 
-SHARED_OBJECT = libnss_extip$(BITSOFS).so.2
-INSTALL_NAME = libnss_extip.so.2
+OBJECTS=libnss_filehosts$(OBJSUFFIX) 
+SHARED_OBJECT = libnss_filehosts$(BITSOFS).so.2
+INSTALL_NAME = libnss_filehosts.so.2
 # This only works sometimes, give manually when needed:
 BIT_CFLAGS = $(if $(BITSOFS),-m$(BITSOFS))
 CFLAGS = $(BIT_CFLAGS) -g -O2 -Wall -Wpointer-arith
@@ -25,7 +25,7 @@ $(SHARED_OBJECT): $(OBJECTS)
 	$(CC) $(CFLAGS) $(INCLUDES) $(LDFLAGS) -o $(SHARED_OBJECT) $(OBJECTS) $(LIBS)
 #	strip $(SHARED_OBJECT)
 	chmod -x $(SHARED_OBJECT)
-	ln -sf $(SHARED_OBJECT) libnss_extip$(BITSOFS).so
+	ln -sf $(SHARED_OBJECT) libnss_filehosts$(BITSOFS).so
 
 %$(OBJSUFFIX): %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -c -o $@ $<

@@ -27,7 +27,7 @@
 #include <string.h>
 
 
-#define EXTIP_BASE_PATH "/var/run/firewall/"
+#define EXTIP_BASE_PATH "/etc/filehosts/"
 #define EXTIP_BASE_PATH_LEN 18
 #define EXTIP_HOSTNAME_MAXLEN 64
 
@@ -81,6 +81,7 @@ enum nss_status extip_gethostbyname_r(
 	struct ipaddr extip;
 	FILE *fh;
 	char extip_file[EXTIP_BASE_PATH_LEN+EXTIP_HOSTNAME_MAXLEN+1];
+	char extip_hostname[EXTIP_HOSTNAME_MAXLEN+1];
 	char ipbuf[INET6_ADDRSTRLEN];
 	int af = 0;
 	int cnt = 0;
@@ -89,6 +90,8 @@ enum nss_status extip_gethostbyname_r(
 	// TODO: check TLD ".localhost"
 	if(strcmp(name, "extip.localhost")==0 || strcmp(name, "extipv4.localhost")==0) af = AF_INET;
 	else if(strcmp(name, "extipv6.localhost")==0) af = AF_INET6;
+	// TODO: extract extip_hostname
+	// TODO: guess address family
 	
 	if(af != 0 && (req_af == af || req_af == 0))
 	{
@@ -98,12 +101,12 @@ enum nss_status extip_gethostbyname_r(
 			goto buffer_error;
 		}
 		
-		/* Alias names -> none */
+		/* Alias names := none */
 		*((char**) buffer) = NULL;
 		result->h_aliases = (char**) buffer;
 		idx = sizeof(char*);
 		
-		/* Official name -> copy requested hostname */
+		/* Canonical name -> copy requested hostname */
 		strcpy(buffer+idx, name);
 		result->h_name = buffer+idx;
 		idx += strlen(name)+1;
@@ -113,10 +116,18 @@ enum nss_status extip_gethostbyname_r(
 		result->h_addrtype = af;
 		result->h_length = (af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
 		
+		/* Construct file name */
+		if(snprintf(extip_file, EXTIP_BASE_PATH_LEN + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, extip_hostname) <= 0)
+		{
+			abort();
+		}
+		
 		/* Read file containing external IPs */
 		fh = fopen(extip_file, "r");
 		if(fh == NULL)
 		{
+			if(errno == ENOENT) goto host_not_found;
+			
 			warn("%s", extip_file);
 			*errnop = EAGAIN;
 			*h_errnop = NO_RECOVERY;
@@ -148,6 +159,7 @@ enum nss_status extip_gethostbyname_r(
 		
 		if(cnt == 0)
 		{
+			host_not_found:
 			*errnop = EINVAL;
 			*h_errnop = NO_ADDRESS;
 			return NSS_STATUS_NOTFOUND;
