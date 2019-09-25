@@ -22,13 +22,13 @@
 #include <netdb.h>
 #include <errno.h>
 #include <err.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
 
 #define EXTIP_BASE_PATH "/etc/filehosts/"
-#define EXTIP_BASE_PATH_LEN 18
 #define EXTIP_HOSTNAME_MAXLEN 255
 #define SUCCESS 1
 
@@ -69,7 +69,7 @@ void* ipaddr_get_binary_addr(struct ipaddr *addr)
 	return NULL;
 }
 
-enum nss_status extip_gethostbyname_r(
+enum nss_status filehosts_gethostbyname_r(
 	const char *hostname,
 	struct hostent *result,
 	char *buffer,
@@ -81,7 +81,7 @@ enum nss_status extip_gethostbyname_r(
 	size_t idx, astart;
 	struct ipaddr extip;
 	FILE *fh;
-	char extip_file[EXTIP_BASE_PATH_LEN+EXTIP_HOSTNAME_MAXLEN+1];
+	char extip_file[strlen(EXTIP_BASE_PATH)+EXTIP_HOSTNAME_MAXLEN+1];
 	char ipbuf[INET6_ADDRSTRLEN];
 	int cnt = 0;
 	
@@ -93,7 +93,7 @@ enum nss_status extip_gethostbyname_r(
 	}
 	
 	/* We don't know the address family yet */
-	result->h_addrtype = 0;
+	result->h_addrtype = AF_UNSPEC;
 	
 	/* Alias names := none */
 	*((char**) buffer) = NULL;
@@ -113,7 +113,7 @@ enum nss_status extip_gethostbyname_r(
 		/* hostname is too long */
 		goto host_not_found;
 	}
-	if(snprintf(extip_file, EXTIP_BASE_PATH_LEN + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, hostname) != EXTIP_BASE_PATH_LEN + strlen(hostname))
+	if(snprintf(extip_file, strlen(EXTIP_BASE_PATH) + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, hostname) != strlen(EXTIP_BASE_PATH) + strlen(hostname))
 	{
 		abort();
 	}
@@ -136,16 +136,16 @@ enum nss_status extip_gethostbyname_r(
 		{
 			if(parseIpStr(ipbuf, &extip) == SUCCESS)
 			{
-				if(req_af == 0)
+				if(req_af == AF_UNSPEC)
 				{
-					/* Let's take the first found IP's AF if there was no preferred AF in the request */
+					/* Let's take the first found IP's AF if the caller has not specified any */
 					req_af = extip.af;
 				}
 				if(extip.af == req_af)
 				{
-					if(result->h_addrtype == 0)
+					if(result->h_addrtype == AF_UNSPEC)
 					{
-						/* Fill the AF fields if they have not yet */
+						/* Fill the AF fields if they have not been yet */
 						result->h_addrtype = extip.af;
 						result->h_length = (extip.af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
 					}
@@ -195,7 +195,7 @@ enum nss_status extip_gethostbyname_r(
 	return NSS_STATUS_TRYAGAIN;
 }
 
-enum nss_status _nss_extip_gethostbyname_r(
+enum nss_status _nss_filehosts_gethostbyname_r(
 	const char *hostname,
 	struct hostent *result,
 	char *buffer,
@@ -203,10 +203,10 @@ enum nss_status _nss_extip_gethostbyname_r(
 	int *errnop,
 	int *h_errnop)
 {
-	return extip_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, 0);
+	return filehosts_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, 0);
 }
 
-enum nss_status _nss_extip_gethostbyname2_r(
+enum nss_status _nss_filehosts_gethostbyname2_r(
 	const char *hostname,
 	int af,
 	struct hostent * result,
@@ -215,7 +215,7 @@ enum nss_status _nss_extip_gethostbyname2_r(
 	int *errnop,
 	int *h_errnop)
 {
-	if (af != AF_INET && af != AF_INET6)
+	if (af != AF_INET && af != AF_INET6 && af != AF_UNSPEC)
 	{
 		*errnop = EAFNOSUPPORT;
 		*h_errnop = NO_RECOVERY;
@@ -223,7 +223,7 @@ enum nss_status _nss_extip_gethostbyname2_r(
 	}
 	else
 	{
-		return extip_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, af);
+		return filehosts_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, af);
 	}
 }
 
