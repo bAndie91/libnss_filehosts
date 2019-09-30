@@ -32,12 +32,19 @@
 #define EXTIP_HOSTNAME_MAXLEN 255
 #define SUCCESS 1
 
+#define STRINGIFY(x) #x
+#define STR(x) STRINGIFY(x)
+
 struct ipaddr {
 	int af;
 	struct in_addr ip4;
 	struct in6_addr ip6;
 };
 
+enum LookupType {
+	LOOKUP_FORWARD = 1,
+	LOOKUP_REVERSE,
+};
 
 #define ALIGN(idx) do { \
   if (idx % sizeof(void*)) \
@@ -70,7 +77,9 @@ void* ipaddr_get_binary_addr(struct ipaddr *addr)
 }
 
 enum nss_status filehosts_gethostbyname_r(
+	enum LookupType lookup_type,
 	const char *hostname,
+	const void *req_addr,
 	struct hostent *result,
 	char *buffer,
 	size_t buflen,
@@ -78,34 +87,71 @@ enum nss_status filehosts_gethostbyname_r(
 	int *h_errnop,
 	int req_af)
 {
-	size_t idx, astart;
+	size_t bufpos = 0;
+	size_t astart;
 	struct ipaddr extip;
 	FILE *fh;
 	char extip_file[strlen(EXTIP_BASE_PATH)+EXTIP_HOSTNAME_MAXLEN+1];
-	char ipbuf[INET6_ADDRSTRLEN];
+	char answer_buf[EXTIP_HOSTNAME_MAXLEN+1];
 	int cnt = 0;
+	int reverse_canonical_name_found = 0;
+	void* h_addr;
 	
 	
-	/* Check buffer size */
-	if(sizeof(char*) /* NULL pointer for aliases */ + strlen(hostname)+1 /* official name string */ + 8 /* possible alignment */ > buflen)
-	{
-		goto buffer_error;
-	}
 	
 	/* We don't know the address family yet */
 	result->h_addrtype = AF_UNSPEC;
 	
-	/* Alias names := none */
-	*((char**) buffer) = NULL;
-	result->h_aliases = (char**) buffer;
-	idx = sizeof(char*);
+	/* Alias names := none; we don't support aliases */
+	*((char**)(buffer+bufpos)) = NULL;
+	result->h_aliases = (char**)(buffer+bufpos);
+	bufpos += sizeof(char*);
 	
-	/* Canonical name -> copy requested hostname */
-	strcpy(buffer+idx, hostname);
-	result->h_name = buffer+idx;
-	idx += strlen(hostname)+1;
-	ALIGN(idx);
-	astart = idx;
+	if(lookup_type == LOOKUP_FORWARD)
+	{
+		/* Check buffer size */
+		if(bufpos +
+		   strlen(hostname)+1 /* canonical name string */ + 
+		   sizeof(void*) /* possible alignment */ > buflen)
+		{
+			goto buffer_error;
+		}
+		
+		/* Canonical name := requested hostname (copy) */
+		strcpy(buffer+bufpos, hostname);
+		result->h_name = buffer+bufpos;
+		buffer[strlen(hostname)] = '\0';
+		bufpos += strlen(hostname)+1;
+		ALIGN(bufpos);
+		astart = bufpos;
+	}
+	
+	if(lookup_type == LOOKUP_REVERSE)
+	{
+		/* Address family is defined by caller */
+		result->h_addrtype = req_af;
+		result->h_length = (req_af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
+		
+		/* Check buffer size */
+		if(bufpos +
+		   result->h_length /* requested IP address */ +
+		   sizeof(char*) /* h_addr_list[0] */ +
+		   sizeof(char*) /* h_addr_list[1] (NULL) */ > buflen)
+		{
+			goto buffer_error;
+		}
+		
+		/* Add requested IP to the address list */
+		h_addr = (void*)(buffer+bufpos);
+		memcpy(h_addr, req_addr, result->h_length);
+		bufpos += result->h_length;
+		*((char**)(buffer+bufpos)) = h_addr;
+		result->h_addr_list = (char**)(buffer+bufpos);
+		bufpos += sizeof(char*);
+		/* Add list terminating NULL */
+		*((char**)(buffer+bufpos)) = NULL;
+		bufpos += sizeof(char*);
+	}
 	
 	/* Construct file name */
 	if(strlen(hostname) > EXTIP_HOSTNAME_MAXLEN)
@@ -132,34 +178,70 @@ enum nss_status filehosts_gethostbyname_r(
 	
 	while(!feof(fh))
 	{
-		if(fscanf(fh, "%s", &ipbuf) == 1)
+		if(fscanf(fh, "%"STR(EXTIP_HOSTNAME_MAXLEN)"s", &answer_buf) == 1)
 		{
-			if(parseIpStr(ipbuf, &extip) == SUCCESS)
+			if(lookup_type == LOOKUP_FORWARD)
 			{
-				if(req_af == AF_UNSPEC)
+				if(parseIpStr(answer_buf, &extip) == SUCCESS)
 				{
-					/* Let's take the first found IP's AF if the caller has not specified any */
-					req_af = extip.af;
+					if(req_af == AF_UNSPEC)
+					{
+						/* Let's take the first found IP's AF if the caller has not specified any */
+						req_af = extip.af;
+					}
+					if(extip.af == req_af)
+					{
+						if(result->h_addrtype == AF_UNSPEC)
+						{
+							/* Fill the AF fields if they have not been yet */
+							result->h_addrtype = extip.af;
+							result->h_length = (extip.af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
+						}
+						
+						if(bufpos + 
+						   result->h_length /* current address */ + 
+						   (cnt+1) * sizeof(char*) /* all h_addr_list pointers so far added below */ > buflen)
+						{
+							fclose(fh);
+							goto buffer_error;
+						}
+						
+						memcpy(buffer+bufpos, ipaddr_get_binary_addr(&extip), result->h_length);
+						bufpos += result->h_length;
+						cnt++;
+					}
 				}
-				if(extip.af == req_af)
+			}
+			
+			if(lookup_type == LOOKUP_REVERSE)
+			{
+				/* Check buffer size */
+				if(bufpos +
+				   strlen(answer_buf)+1 /* hostname just found */ + 
+				   sizeof(void*) /* possible alignment */ > buflen)
 				{
-					if(result->h_addrtype == AF_UNSPEC)
-					{
-						/* Fill the AF fields if they have not been yet */
-						result->h_addrtype = extip.af;
-						result->h_length = (extip.af == AF_INET6) ? sizeof(struct in6_addr) : sizeof(struct in_addr);
-					}
-					
-					if(idx + result->h_length + (cnt+1) * sizeof(char*) > buflen)
-					{
-						fclose(fh);
-						goto buffer_error;
-					}
-					
-					memcpy(buffer+idx, ipaddr_get_binary_addr(&extip), result->h_length);
-					idx += result->h_length;
-					cnt++;
+					fclose(fh);
+					goto buffer_error;
 				}
+				
+				cnt++;
+				
+				if(!reverse_canonical_name_found)
+				{
+					/* Canonical name := found hostname */
+					strcpy(buffer+bufpos, answer_buf);
+					result->h_name = buffer+bufpos;
+					buffer[strlen(answer_buf)] = '\0';
+					bufpos += strlen(answer_buf)+1;
+					ALIGN(bufpos);
+					astart = bufpos;
+				}
+				else
+				{
+					// TODO: continue reading file and add further names as aliases
+				}
+				
+				break; // TODO: wont need to break once aliases are supported
 			}
 		}
 	}
@@ -173,13 +255,16 @@ enum nss_status filehosts_gethostbyname_r(
 		return NSS_STATUS_NOTFOUND;
 	}
 	
-	result->h_addr_list = (char**)(buffer + idx);
-	int n = 0;
-	for(; n < cnt; n++)
+	if(lookup_type == LOOKUP_FORWARD)
 	{
-		result->h_addr_list[n] = (char*)(buffer + astart + n*result->h_length);
+		result->h_addr_list = (char**)(buffer + bufpos);
+		int n = 0;
+		for(; n < cnt; n++)
+		{
+			result->h_addr_list[n] = (char*)(buffer + astart + n*result->h_length);
+		}
+		result->h_addr_list[n] = NULL;
 	}
-	result->h_addr_list[n] = NULL;
 	
 	return NSS_STATUS_SUCCESS;
 	
@@ -203,19 +288,19 @@ enum nss_status _nss_filehosts_gethostbyname_r(
 	int *errnop,
 	int *h_errnop)
 {
-	return filehosts_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, 0);
+	return filehosts_gethostbyname_r(LOOKUP_FORWARD, hostname, NULL, result, buffer, buflen, errnop, h_errnop, AF_UNSPEC);
 }
 
 enum nss_status _nss_filehosts_gethostbyname2_r(
 	const char *hostname,
-	int af,
+	int req_af,
 	struct hostent * result,
 	char *buffer,
 	size_t buflen,
 	int *errnop,
 	int *h_errnop)
 {
-	if (af != AF_INET && af != AF_INET6 && af != AF_UNSPEC)
+	if (req_af != AF_INET && req_af != AF_INET6 && req_af != AF_UNSPEC)
 	{
 		*errnop = EAFNOSUPPORT;
 		*h_errnop = NO_RECOVERY;
@@ -223,7 +308,27 @@ enum nss_status _nss_filehosts_gethostbyname2_r(
 	}
 	else
 	{
-		return filehosts_gethostbyname_r(hostname, result, buffer, buflen, errnop, h_errnop, af);
+		return filehosts_gethostbyname_r(LOOKUP_FORWARD, hostname, NULL, result, buffer, buflen, errnop, h_errnop, req_af);
 	}
 }
 
+enum nss_status _nss_filehosts_gethostbyaddr_r(
+	const void *address,
+	socklen_t len,
+	int req_af,
+	struct hostent * result,
+	char *buffer,
+	size_t buflen,
+	int *errnop,
+	int *h_errnop)
+{
+	char address_as_string[INET6_ADDRSTRLEN];
+	if(inet_ntop(req_af, address, address_as_string, sizeof(address_as_string)/sizeof(char)) == NULL)
+	{
+		*errnop = errno;
+		*h_errnop = NO_RECOVERY;
+		return NSS_STATUS_UNAVAIL;
+	}
+	
+	return filehosts_gethostbyname_r(LOOKUP_REVERSE, address_as_string, address, result, buffer, buflen, errnop, h_errnop, req_af);
+}
