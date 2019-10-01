@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>
 
 
 #define EXTIP_BASE_PATH "/etc/filehosts/"
@@ -331,4 +332,75 @@ enum nss_status _nss_filehosts_gethostbyaddr_r(
 	}
 	
 	return filehosts_gethostbyname_r(LOOKUP_REVERSE, address_as_string, address, result, buffer, buflen, errnop, h_errnop, req_af);
+}
+
+
+static struct {
+	DIR * dh;
+} filehosts_enumerator;
+
+enum nss_status _nss_filehosts_sethostent(void)
+{
+	filehosts_enumerator.dh = opendir(EXTIP_BASE_PATH);
+	if(filehosts_enumerator.dh == NULL) return NSS_STATUS_TRYAGAIN;
+	return NSS_STATUS_SUCCESS;
+}
+
+enum nss_status _nss_filehosts_gethostent_r(
+	struct hostent *result,
+	char *buffer,
+	size_t buflen,
+	int *errnop,
+	int *h_errnop)
+{
+	struct dirent *dent;
+	enum LookupType lookup_type;
+	int af;
+	struct in_addr ipv4;
+	struct in6_addr ipv6;
+	void *address;
+	
+	if(filehosts_enumerator.dh == NULL)
+	{
+		*errnop = NO_RECOVERY;
+		return NSS_STATUS_UNAVAIL;
+	}
+	
+	do {
+		dent = readdir(filehosts_enumerator.dh);
+		if(dent == NULL)
+		{
+			*errnop = NO_ADDRESS;
+			return NSS_STATUS_NOTFOUND;
+		}
+	}
+	while(dent->d_name[0] == '.');
+	
+	if(inet_pton(AF_INET6, dent->d_name, &ipv6))
+	{
+		lookup_type = LOOKUP_REVERSE;
+		af = AF_INET6;
+		address = &ipv6;
+	}
+	else if(inet_pton(AF_INET, dent->d_name, &ipv4))
+	{
+		lookup_type = LOOKUP_REVERSE;
+		af = AF_INET;
+		address = &ipv4;
+	}
+	else
+	{
+		lookup_type = LOOKUP_FORWARD;
+		af = AF_UNSPEC;
+		address = NULL;
+	}
+	
+	return filehosts_gethostbyname_r(lookup_type, dent->d_name, address, result, buffer, buflen, errnop, h_errnop, af);
+}
+
+enum nss_status _nss_filehosts_endhostent(void)
+{
+	if(filehosts_enumerator.dh == NULL) return NSS_STATUS_UNAVAIL;
+	if(closedir(filehosts_enumerator.dh)==0) filehosts_enumerator.dh = NULL;
+	return NSS_STATUS_SUCCESS;
 }
