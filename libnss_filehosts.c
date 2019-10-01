@@ -103,13 +103,13 @@ enum nss_status filehosts_gethostbyname_r(
 	/* We don't know the address family yet */
 	result->h_addrtype = AF_UNSPEC;
 	
-	/* Alias names := none; we don't support aliases */
-	*((char**)(buffer+bufpos)) = NULL;
-	result->h_aliases = (char**)(buffer+bufpos);
-	bufpos += sizeof(char*);
-	
 	if(lookup_type == LOOKUP_FORWARD)
 	{
+		/* Aliases on forward lookup is not supported (otherwise all files had to be read up) */
+		*((char**)(buffer+bufpos)) = NULL;
+		result->h_aliases = (char**)(buffer+bufpos);
+		bufpos += sizeof(char**);
+		
 		/* Check buffer size */
 		if(bufpos +
 		   strlen(hostname)+1 /* canonical name string */ + 
@@ -137,21 +137,28 @@ enum nss_status filehosts_gethostbyname_r(
 		if(bufpos +
 		   result->h_length /* requested IP address */ +
 		   sizeof(char*) /* h_addr_list[0] */ +
-		   sizeof(char*) /* h_addr_list[1] (NULL) */ > buflen)
+		   sizeof(char*) /* h_addr_list[1] (NULL) */ +
+		   sizeof(char*) /* h_aliases[0] (NULL) */ > buflen)
 		{
 			goto buffer_error;
 		}
 		
-		/* Add requested IP to the address list */
+		/* Copy requested IP address to the buffer */
 		h_addr = (void*)(buffer+bufpos);
 		memcpy(h_addr, req_addr, result->h_length);
 		bufpos += result->h_length;
+		/* h_addr_list[0] --> h_addr */
 		*((char**)(buffer+bufpos)) = h_addr;
+		/* h_addr_list --> h_addr_list[0] */
 		result->h_addr_list = (char**)(buffer+bufpos);
-		bufpos += sizeof(char*);
-		/* Add list terminating NULL */
+		bufpos += sizeof(char**);
+		/* h_addr_list[1] --> NULL */
 		*((char**)(buffer+bufpos)) = NULL;
 		bufpos += sizeof(char*);
+
+		/* Initiate h_aliases array */
+		result->h_aliases = (char**)(buffer + buflen - 1 /* "1" means sizeof(char**) here */);
+		result->h_aliases[0] = NULL;
 	}
 	
 	/* Construct file name */
@@ -216,16 +223,16 @@ enum nss_status filehosts_gethostbyname_r(
 			
 			if(lookup_type == LOOKUP_REVERSE)
 			{
+				cnt++;
+				
 				/* Check buffer size */
 				if(bufpos +
 				   strlen(answer_buf)+1 /* hostname just found */ + 
-				   sizeof(void*) /* possible alignment */ > buflen)
+				   cnt * sizeof(char*) /* h_aliases array at the end of buffer (canonical name does not need a slot there, but there is the terminating NULL) */ > buflen)
 				{
 					fclose(fh);
 					goto buffer_error;
 				}
-				
-				cnt++;
 				
 				if(!reverse_canonical_name_found)
 				{
@@ -234,15 +241,20 @@ enum nss_status filehosts_gethostbyname_r(
 					result->h_name = buffer+bufpos;
 					buffer[bufpos + strlen(answer_buf)] = '\0';
 					bufpos += strlen(answer_buf)+1;
-					ALIGN(bufpos);
-					astart = bufpos;
+					reverse_canonical_name_found = 1;
 				}
 				else
 				{
-					// TODO: continue reading file and add further names as aliases
+					strcpy(buffer+bufpos, answer_buf);
+					buffer[bufpos + strlen(answer_buf)] = '\0';
+					
+					/* Move h_aliases pointer back in buffer */
+					/* Aliases will be in reverse order in this way, but this does not matter */
+					result->h_aliases = (char**)(result->h_aliases - 1 /* "1" means sizeof(char**) here */);
+					result->h_aliases[0] = (char*)(buffer+bufpos);
+					
+					bufpos += strlen(answer_buf)+1;
 				}
-				
-				break; // TODO: wont need to break once aliases are supported
 			}
 		}
 	}
