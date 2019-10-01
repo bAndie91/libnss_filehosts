@@ -120,7 +120,7 @@ enum nss_status filehosts_gethostbyname_r(
 		/* Canonical name := requested hostname (copy) */
 		strcpy(buffer+bufpos, hostname);
 		result->h_name = buffer+bufpos;
-		buffer[strlen(hostname)] = '\0';
+		buffer[bufpos + strlen(hostname)] = '\0';
 		bufpos += strlen(hostname)+1;
 		ALIGN(bufpos);
 		astart = bufpos;
@@ -231,7 +231,7 @@ enum nss_status filehosts_gethostbyname_r(
 					/* Canonical name := found hostname */
 					strcpy(buffer+bufpos, answer_buf);
 					result->h_name = buffer+bufpos;
-					buffer[strlen(answer_buf)] = '\0';
+					buffer[bufpos + strlen(answer_buf)] = '\0';
 					bufpos += strlen(answer_buf)+1;
 					ALIGN(bufpos);
 					astart = bufpos;
