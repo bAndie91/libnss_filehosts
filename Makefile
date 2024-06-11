@@ -30,9 +30,10 @@ $(SHARED_OBJECT): $(OBJECTS)
 %$(OBJSUFFIX): %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -c -o $@ $<
 
-install:
+install: $(INSTALL_NAME)
 	install -m755 -d $(DESTDIR)$(libprefix)/
 	install -m644 $(SHARED_OBJECT) $(DESTDIR)$(libprefix)/$(INSTALL_NAME)
+	@echo "Don't forget to insert \"filehosts\" in /etc/nsswitch.conf"
 
 clean:
 	rm -f $(OBJECTS)
