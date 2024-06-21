@@ -33,6 +33,7 @@ $(SHARED_OBJECT): $(OBJECTS)
 install: $(INSTALL_NAME)
 	install -m755 -d $(DESTDIR)$(libprefix)/
 	install -m644 $(SHARED_OBJECT) $(DESTDIR)$(libprefix)/$(INSTALL_NAME)
+	ldconfig
 	@echo "Don't forget to insert \"filehosts\" in /etc/nsswitch.conf"
 
 clean:

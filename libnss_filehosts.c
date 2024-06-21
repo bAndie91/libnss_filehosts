@@ -162,9 +162,9 @@ enum nss_status filehosts_gethostbyname_r(
 	}
 	
 	/* Construct file name */
-	if(strlen(hostname) > EXTIP_HOSTNAME_MAXLEN)
+	if(strlen(hostname) == 0 || strlen(hostname) > EXTIP_HOSTNAME_MAXLEN)
 	{
-		/* hostname is too long */
+		/* hostname is empty or too long */
 		goto host_not_found;
 	}
 	if(snprintf(extip_file, strlen(EXTIP_BASE_PATH) + EXTIP_HOSTNAME_MAXLEN + 1, "%s%s", EXTIP_BASE_PATH, hostname) != strlen(EXTIP_BASE_PATH) + strlen(hostname))
